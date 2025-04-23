@@ -4,7 +4,6 @@ use thiserror::Error;
 // src/shared/error/mod.rs
 pub mod handlers; // This makes sure handlers.rs is part of the module tree.
 #[derive(Error, Debug)]
-#[allow(dead_code)]
 pub enum AuthError {
     #[error("invalid credentials")]
     InvalidCredentials,
@@ -30,7 +29,6 @@ pub enum AuthError {
 impl warp::reject::Reject for AuthError {}
 
 #[derive(Error, Debug, Serialize)]
-#[allow(dead_code)]
 pub enum AppError {
     #[error("email not found")]
     EmailNotFound,
@@ -48,6 +46,10 @@ pub enum AppError {
     NoPermissionError,
     #[error("validation error: {0}")]
     ValidationError(String),
+    #[error("internal server error")]
+    InternalServerError,
+    #[error("user already exists")]
+    UserAlreadyExists,
 }
 impl warp::reject::Reject for AppError {}
 

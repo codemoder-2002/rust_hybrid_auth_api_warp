@@ -14,6 +14,7 @@ pub fn hash_password(password: &str) -> Result<String, AuthError> {
         .to_string();
     Ok(password_hash)
 }
+
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, AuthError> {
     let parsed_hash = PasswordHash::new(password_hash).map_err(|_| AuthError::ArgonError)?;
     let argon2 = Argon2::default();

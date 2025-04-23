@@ -8,6 +8,9 @@ pub struct LoginRequest {
 
     #[validate(length(min = 6))]
     pub password: String,
+
+    #[validate(length(min = 6, max = 6))]
+    pub code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -36,4 +39,11 @@ pub struct RegisterResponse {
     pub username: String,
     pub token: String,
     pub id: i32,
+}
+
+#[derive(Serialize)]
+pub struct EmailMessage {
+    to: String,
+    subject: String,
+    code: String,
 }

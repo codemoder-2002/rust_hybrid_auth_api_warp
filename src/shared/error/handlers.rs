@@ -18,6 +18,14 @@ pub async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> 
                 "Token generation failed".to_string(),
             ),
             AppError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::InternalServerError => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            ),
+            AppError::UserAlreadyExists => {
+                (StatusCode::BAD_REQUEST, "User already exists".to_string())
+            }
+
             AppError::EmailNotFound => (StatusCode::BAD_REQUEST, "Email not found".to_string()),
             _ => (StatusCode::BAD_REQUEST, e.to_string()),
         }
@@ -51,6 +59,7 @@ pub async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> 
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Password verification failed".to_string(),
             ),
+
             _ => (StatusCode::UNAUTHORIZED, e.to_string()),
         }
     } else if let Some(_) = err.find::<MethodNotAllowed>() {

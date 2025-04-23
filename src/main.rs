@@ -10,7 +10,6 @@ use tracing::*;
 
 #[tokio::main]
 async fn main() {
-    println!("🚀 Starting the application...");
     if dotenvy::dotenv().is_err() {
         eprintln!("⚠️  .env file not found. Continuing with system environment variables.");
     }
@@ -24,9 +23,15 @@ async fn main() {
     });
 
     let pool: sqlx::Pool<sqlx::Postgres> = db::connection::establish_connection(&env).await;
+    let redis_pool = db::connection::create_redis_connection(&env)
+        .await
+        .unwrap_or_else(|err| {
+            error!("❌ Failed to create Redis connection: {}", err);
+            std::process::exit(1);
+        });
     info!("connected");
 
-    let routes = api::auth::controller::auth_routes(pool);
+    let routes = api::auth::controller::auth_routes(pool, redis_pool);
 
     let (addr, server) =
         warp::serve(routes).bind_with_graceful_shutdown(([127, 0, 0, 1], 3030), async {

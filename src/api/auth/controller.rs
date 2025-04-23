@@ -2,6 +2,7 @@ use super::service;
 use crate::api::auth::dto::*;
 use crate::shared::error::handlers::handle_rejection;
 use crate::shared::utils::validator::with_validated_body;
+use redis::aio::MultiplexedConnection;
 use sqlx::PgPool;
 use warp::Filter;
 
@@ -11,10 +12,20 @@ fn with_db(
     warp::any().map(move || pool.clone())
 }
 
-pub fn auth_routes(pool: PgPool) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
+fn with_redis(
+    redis_pool: MultiplexedConnection,
+) -> impl Filter<Extract = (MultiplexedConnection,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || redis_pool.clone())
+}
+
+pub fn auth_routes(
+    pool: PgPool,
+    redis_pool: MultiplexedConnection,
+) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
     let credentials_login = warp::path!("login")
         .and(warp::post())
         .and(with_db(pool.clone()))
+        .and(with_redis(redis_pool.clone()))
         .and(with_validated_body::<LoginRequest>()) // ✅ this already extracts and validates
         .and_then(service::login);
 

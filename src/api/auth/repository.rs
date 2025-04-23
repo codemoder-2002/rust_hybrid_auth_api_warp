@@ -1,57 +1,96 @@
+use rdkafka::{
+    ClientConfig,
+    producer::{FutureProducer, FutureRecord},
+};
+use redis::AsyncCommands;
+use serde_json::json;
 use sqlx::PgPool;
 
-use warp::Reply;
+use redis::aio::MultiplexedConnection;
+use uuid::Uuid;
 
-use crate::{api::auth::dto::*, schema::models::User};
+// Import the required trait for map_err
 
-pub async fn find_user_by_email(pool: PgPool, email: String) -> Result<User, warp::Rejection> {
+use crate::{
+    api::auth::dto::*,
+    schema::models::{EmailVerification, User},
+    shared::{error::AppError, utils::hash::hash_password},
+};
+
+pub async fn find_user_by_email(pool: &PgPool, email: String) -> Result<User, AppError> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
         .bind(email)
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
-        .map_err(|_| warp::reject::not_found()) // you can replace with your own error handler
-}
-pub async fn register(_pool: PgPool, body: RegisterRequest) -> Result<impl Reply, warp::Rejection> {
-    // Logic to create a user
-    Ok(warp::reply::json(&format!("Registered {}", body.email)))
+        .map_err(|_| AppError::EmailNotFound) // you can replace with your own error handler
 }
 
-pub async fn refresh_token(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
-    Ok(warp::reply::json(&"Token refreshed"))
+pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, AppError> {
+    let hashed_password =
+        hash_password(&req.password).map_err(|_| AppError::InternalServerError)?;
+
+    let user = sqlx::query_as::<_, User>(
+        "INSERT INTO users (email, password_hash, is_verified) VALUES ($1, $2, FALSE)
+         RETURNING *",
+    )
+    .bind(req.email)
+    .bind(hashed_password)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| AppError::InternalServerError)?;
+    Ok(user)
+}
+pub async fn update_user_password(
+    pool: &PgPool,
+    user_id: Uuid,
+    new_password: String,
+) -> Result<(), AppError> {
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(new_password)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(|_| AppError::InternalServerError)?; // 💡 Proper error propagation
+
+    Ok(())
 }
 
-pub async fn get_all_users(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
-    // Pretend to return a list of users
-    Ok(warp::reply::json(&vec!["user1", "user2"]))
+pub async fn send_email_verification_kafka(
+    producer: &FutureProducer,
+    topic: &str,
+    email: EmailMessage,
+) {
+    let payload = serde_json::to_string(&email).expect("Failed to serialize email message");
+
+    let record = FutureRecord::to(topic).payload(&payload).key(&email);
+
+    match producer.send(record, 0).await {
+        Ok(_) => println!("Message sent to Kafka"),
+        Err(e) => eprintln!("Failed to send message to Kafka: {}", e),
+    }
 }
 
-pub async fn verify_email(
-    _pool: PgPool,
-    body: LoginRequest,
-) -> Result<impl Reply, warp::Rejection> {
-    // Pretend to return a list of users
-    Ok(warp::reply::json(&format!("Registered {}", body.email)))
-}
+pub async fn store_refresh_token(
+    redis_conn: &mut MultiplexedConnection,
+    session_id: &str,
+    refresh_token: &str,
+    user_id: String,
+) -> Result<(), warp::Rejection> {
+    let key: String = format!("session:{}", session_id);
 
-pub async fn request_2fa(_pool: PgPool, body: LoginRequest) -> Result<impl Reply, warp::Rejection> {
-    // Pretend to return a list of users
-    Ok(warp::reply::json(&format!("Registered {}", body.email)))
-}
+    let value: String = json!({
+        "refresh_token": refresh_token,
+        "user_id": user_id
+    })
+    .to_string();
 
-pub async fn verify_2fa(_pool: PgPool, body: LoginRequest) -> Result<impl Reply, warp::Rejection> {
-    // Pretend to return a list of users
-    Ok(warp::reply::json(&format!("Registered {}", body.email)))
-}
+    // Store session with a 7-day expiration
+    let expiry_seconds = 7 * 24 * 60 * 60;
 
-pub async fn oauth_callback(
-    _pool: PgPool,
-    body: LoginRequest,
-) -> Result<impl Reply, warp::Rejection> {
-    // Pretend to return a list of users
-    Ok(warp::reply::json(&format!("Registered {}", body.email)))
-}
+    let _: () = redis_conn
+        .set_ex(key, value, expiry_seconds)
+        .await
+        .map_err(|_| warp::reject::not_found())?;
 
-pub async fn logout(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
-    // Pretend to return a list of users
-    Ok(warp::reply::json(&vec!["user1", "user2"]))
+    Ok(())
 }
