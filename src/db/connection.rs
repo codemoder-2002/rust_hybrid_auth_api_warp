@@ -1,6 +1,6 @@
 use crate::shared::config::environment::Environment;
-use redis::Client;
-use redis::aio::MultiplexedConnection;
+use deadpool_redis::{Config, Connection, Pool, Runtime, redis::cmd};
+
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::error::Error;
@@ -13,10 +13,16 @@ pub async fn establish_connection(env: &Environment) -> PgPool {
         .expect("Failed to create SQLx pool")
 }
 
-pub async fn create_redis_connection(
-    env: &Environment,
-) -> Result<MultiplexedConnection, Box<dyn Error>> {
-    let client = Client::open(env.redis_url.clone())?;
-    let connection = client.get_multiplexed_async_connection().await?;
-    Ok(connection)
+pub async fn create_redis_connection(env: &Environment) -> Result<Pool, Box<dyn Error>> {
+    let cfg = Config::from_url(&env.redis_url);
+    let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
+
+    // Redis command using redis-rs style inside deadpool connection
+    // let value: String = cmd("GET")
+    //     .arg(&["deadpool/test_key"])
+    //     .query_async(&mut conn)
+    //     .await
+    //     .unwrap();
+
+    Ok(pool)
 }

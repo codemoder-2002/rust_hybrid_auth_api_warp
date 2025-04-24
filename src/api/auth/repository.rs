@@ -1,26 +1,24 @@
-use rdkafka::{
-    ClientConfig,
-    producer::{FutureProducer, FutureRecord},
-};
-use redis::AsyncCommands;
-use serde_json::json;
-use sqlx::PgPool;
+// use rdkafka::{
+//     ClientConfig,
+//     producer::{FutureProducer, FutureRecord},
+// };
+use deadpool_redis::{Connection, redis::AsyncCommands};
 
-use redis::aio::MultiplexedConnection;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 // Import the required trait for map_err
 
 use crate::{
     api::auth::dto::*,
-    schema::models::{EmailVerification, User},
+    schema::models::User,
     shared::{error::AppError, utils::hash::hash_password},
 };
 
-pub async fn find_user_by_email(pool: &PgPool, email: String) -> Result<User, AppError> {
+pub async fn find_user_by_email(_pool: &PgPool, email: &String) -> Result<User, AppError> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
         .bind(email)
-        .fetch_one(pool)
+        .fetch_one(_pool)
         .await
         .map_err(|_| AppError::EmailNotFound) // you can replace with your own error handler
 }
@@ -43,7 +41,7 @@ pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, Ap
 pub async fn update_user_password(
     pool: &PgPool,
     user_id: Uuid,
-    new_password: String,
+    new_password: &String,
 ) -> Result<(), AppError> {
     sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
         .bind(new_password)
@@ -55,42 +53,89 @@ pub async fn update_user_password(
     Ok(())
 }
 
-pub async fn send_email_verification_kafka(
-    producer: &FutureProducer,
-    topic: &str,
-    email: EmailMessage,
-) {
+pub async fn send_email_verification_kafka(email: EmailMessage) {
     let payload = serde_json::to_string(&email).expect("Failed to serialize email message");
 
-    let record = FutureRecord::to(topic).payload(&payload).key(&email);
+    // let record = FutureRecord::to(topic).payload(&payload).key(&email);
 
-    match producer.send(record, 0).await {
-        Ok(_) => println!("Message sent to Kafka"),
-        Err(e) => eprintln!("Failed to send message to Kafka: {}", e),
-    }
+    // match producer.send(record, 0).await {
+    //     Ok(_) => println!("Message sent to Kafka"),
+    //     Err(e) => eprintln!("Failed to send message to Kafka: {}", e),
+    // }
+}
+
+pub async fn save_email_verification_token(
+    redis_conn: &mut Connection,
+    email: &str,
+    token: &str,
+) -> Result<(), AppError> {
+    // Key in Redis: email_verification_token:{email}
+    let key = format!("email_verification_token:{}", email);
+
+    // Store value as JSON (can be plain string if you want)
+    let value = serde_json::json!({ "token": token }).to_string();
+
+    // Token expiration: 15 minutes
+    let expiry_seconds = 15 * 60;
+
+    redis_conn
+        .set_ex::<_, _, ()>(&key, value, expiry_seconds)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(())
 }
 
 pub async fn store_refresh_token(
-    redis_conn: &mut MultiplexedConnection,
+    redis_conn: &mut Connection,
     session_id: &str,
     refresh_token: &str,
     user_id: String,
-) -> Result<(), warp::Rejection> {
-    let key: String = format!("session:{}", session_id);
+) -> Result<(), AppError> {
+    // Get a connection from the pool
 
-    let value: String = json!({
+    // Create the key and value for Redis
+    let key = format!("session:{}", session_id);
+    let value = serde_json::json!({
         "refresh_token": refresh_token,
         "user_id": user_id
     })
     .to_string();
 
-    // Store session with a 7-day expiration
-    let expiry_seconds = 7 * 24 * 60 * 60;
+    // Set the expiration (7 days in seconds)
+    let expiry_seconds: u64 = 7 * 24 * 60 * 60;
 
-    let _: () = redis_conn
-        .set_ex(key, value, expiry_seconds)
+    // Use the connection to set the key-value pair with expiration
+    redis_conn
+        .set_ex::<_, _, ()>(&key, value, expiry_seconds)
         .await
-        .map_err(|_| warp::reject::not_found())?;
+        .map_err(|_| AppError::InternalServerError)?;
 
     Ok(())
+}
+
+pub async fn get2fa_code_redis(
+    redis_conn: &mut Connection,
+    email: &str,
+) -> Result<Option<String>, AppError> {
+    let key = format!("2fa:{}", email);
+    let stored_code: Option<String> = redis_conn
+        .get(&key)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(stored_code)
+}
+
+pub async fn delete_2fa_code_redis(
+    redis_conn: &mut Connection,
+    email: &str,
+) -> Result<Option<String>, AppError> {
+    let key = format!("2fa:{}", email);
+    let stored_code: Option<String> = redis_conn
+        .del(&key)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(stored_code)
 }

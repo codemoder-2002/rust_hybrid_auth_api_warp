@@ -61,23 +61,6 @@ pub struct EmailVerificationClaims {
     exp: usize,
 }
 
-pub fn generate_email_verification_token(
-    user_id: String,
-    email: &str,
-    secret: &str,
-) -> Result<String, AppError> {
-    let claims: EmailVerificationClaims = EmailVerificationClaims {
-        sub: user_id,
-        email: email.to_string(),
-        exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
-    };
-
-    let token: String = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_ref()),
-    )
-    .map_err(|_| AppError::InternalServerError)?;
-
-    Ok(token)
+pub fn generate_email_verification_token() -> String {
+    Uuid::new_v4().to_string()
 }

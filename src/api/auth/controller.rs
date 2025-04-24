@@ -1,9 +1,13 @@
 use super::service;
 use crate::api::auth::dto::*;
+use crate::shared::error::AppError;
 use crate::shared::error::handlers::handle_rejection;
 use crate::shared::utils::validator::with_validated_body;
-use redis::aio::MultiplexedConnection;
+use deadpool_redis::{Connection, Pool};
+// use redis::aio::MultiplexedConnection;
+
 use sqlx::PgPool;
+
 use warp::Filter;
 
 fn with_db(
@@ -12,15 +16,21 @@ fn with_db(
     warp::any().map(move || pool.clone())
 }
 
-fn with_redis(
-    redis_pool: MultiplexedConnection,
-) -> impl Filter<Extract = (MultiplexedConnection,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || redis_pool.clone())
+pub fn with_redis(
+    pool: Pool,
+) -> impl Filter<Extract = (Connection,), Error = warp::Rejection> + Clone {
+    warp::any().and_then(move || {
+        let pool = pool.clone();
+        async move {
+            pool.get()
+                .await
+                .map_err(|_err| warp::reject::custom(AppError::InternalServerError))
+        }
+    })
 }
-
 pub fn auth_routes(
     pool: PgPool,
-    redis_pool: MultiplexedConnection,
+    redis_pool: Pool,
 ) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
     let credentials_login = warp::path!("login")
         .and(warp::post())
@@ -32,6 +42,7 @@ pub fn auth_routes(
     let register = warp::path!("register")
         .and(warp::post())
         .and(with_db(pool.clone()))
+        .and(with_redis(redis_pool.clone()))
         .and(with_validated_body::<RegisterRequest>())
         .and_then(service::register);
 
