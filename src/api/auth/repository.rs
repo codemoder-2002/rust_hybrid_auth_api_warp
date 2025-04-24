@@ -5,6 +5,7 @@
 use deadpool_redis::{Connection, redis::AsyncCommands};
 
 use sqlx::PgPool;
+use tracing::warn;
 use uuid::Uuid;
 
 // Import the required trait for map_err
@@ -26,18 +27,31 @@ pub async fn find_user_by_email(_pool: &PgPool, email: &String) -> Result<User, 
 pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, AppError> {
     let hashed_password =
         hash_password(&req.password).map_err(|_| AppError::InternalServerError)?;
+    println!("hashed_password: {:?}", hashed_password);
 
     let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (email, password_hash, is_verified) VALUES ($1, $2, FALSE)
+        "INSERT INTO users (
+            id,email, first_name, last_name, email_verified, is_two_factor_enabled, role
+         )
+    VALUES ($1, $2, $3, $4, $5, $6, $7::user_role)
          RETURNING *",
     )
+    .bind(Uuid::new_v4())
     .bind(req.email)
-    .bind(hashed_password)
+    .bind(req.first_name)
+    .bind(req.last_name)
+    .bind(false) // default value for email_verified
+    .bind(false) // default value for 2FA
+    .bind("user") // role string or UserRole enum as needed
     .fetch_one(pool)
     .await
-    .map_err(|_| AppError::InternalServerError)?;
+    .map_err(|e| {
+        warn!("DB error: {:?}", e);
+        AppError::InternalServerError
+    })?;
     Ok(user)
 }
+
 pub async fn update_user_password(
     pool: &PgPool,
     user_id: Uuid,
@@ -66,8 +80,8 @@ pub async fn send_email_verification_kafka(email: EmailMessage) {
 
 pub async fn save_email_verification_token(
     redis_conn: &mut Connection,
-    email: &str,
-    token: &str,
+    email: String,
+    token: String,
 ) -> Result<(), AppError> {
     // Key in Redis: email_verification_token:{email}
     let key = format!("email_verification_token:{}", email);

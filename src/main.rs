@@ -29,7 +29,7 @@ async fn main() {
             error!("❌ Failed to create Redis connection: {}", err);
             std::process::exit(1);
         });
-    info!("connected");
+    info!("🚀 Redis is connected");
 
     let routes = api::auth::controller::auth_routes(pool, redis_pool);
 

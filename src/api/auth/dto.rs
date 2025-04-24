@@ -22,14 +22,17 @@ pub struct LoginResponse {
 
 #[derive(Deserialize, Debug, Validate)]
 pub struct RegisterRequest {
+    #[validate(length(min = 2, max = 30))]
+    pub first_name: String,
+
+    #[validate(length(min = 2, max = 50))]
+    pub last_name: String,
+
     #[validate(email)]
     pub email: String,
 
     #[validate(length(min = 6))]
     pub password: String,
-
-    #[validate(length(min = 3))]
-    pub username: String,
 }
 
 #[derive(Serialize)]

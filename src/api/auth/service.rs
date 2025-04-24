@@ -4,7 +4,11 @@ use redis::aio::MultiplexedConnection;
 use serde_json::json;
 pub use sqlx::PgPool;
 use uuid::Uuid;
-use warp::{Rejection, Reply, http::HeaderValue, http::header};
+use warp::{
+    Rejection, Reply,
+    filters::log::Info,
+    http::{HeaderValue, header},
+};
 
 use super::repository;
 use crate::{
@@ -13,6 +17,7 @@ use crate::{
     shared::utils::jwt::*,
     shared::{error::*, utils::hash::verify_password},
 };
+use tracing::*;
 
 pub async fn login(
     pool: PgPool,
@@ -113,8 +118,8 @@ pub async fn register(
                 let token = generate_email_verification_token();
                 repository::save_email_verification_token(
                     &mut redis_pool,
-                    &existing_user.email,
-                    &token,
+                    existing_user.email.clone(),
+                    token,
                 )
                 .await?;
                 // repository::send_email_verification_kafka(
@@ -132,8 +137,11 @@ pub async fn register(
         }
 
         Err(AppError::EmailNotFound) => {
+            info!("User not found, creating new user");
             // User does not exist, safe to create
             let new_user = repository::create_user(&_pool, body).await?;
+            info!("New user created: {:?}", new_user);
+
             // repository::send_email_verification_kafka( new_user.id).await?;
 
             Ok(warp::reply::json(&serde_json::json!({
