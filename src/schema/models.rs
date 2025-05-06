@@ -45,9 +45,9 @@ pub struct NewUser {
     pub first_name: String,
     pub last_name: String,
     pub profile_picture: Option<String>,
-    pub email_verified: bool,
-    pub is_two_factor_enabled: bool,
-    pub role: UserRole,
+    pub email_verified: Option<bool>,
+    pub is_two_factor_enabled: Option<bool>,
+    pub role: Option<UserRole>,
 }
 
 // --------------------------------

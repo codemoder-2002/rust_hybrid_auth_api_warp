@@ -1,5 +1,5 @@
 use crate::shared::config::environment::Environment;
-use deadpool_redis::{Config, Connection, Pool, Runtime, redis::cmd};
+use deadpool_redis::{Config, Pool, Runtime};
 
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -14,7 +14,7 @@ pub async fn establish_connection(env: &Environment) -> PgPool {
 }
 
 pub async fn create_redis_connection(env: &Environment) -> Result<Pool, Box<dyn Error>> {
-    let cfg = Config::from_url(&env.redis_url);
+    let cfg: Config = Config::from_url(&env.redis_url);
     let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
 
     // Redis command using redis-rs style inside deadpool connection

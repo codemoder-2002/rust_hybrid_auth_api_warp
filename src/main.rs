@@ -6,6 +6,7 @@ mod shared;
 use crate::shared::config::environment::Environment;
 use crate::shared::utils::logger::init_logger;
 
+use shared::kafka_message::producer::KafkaProducer;
 use tracing::*;
 
 #[tokio::main]
@@ -23,6 +24,7 @@ async fn main() {
     });
 
     let pool: sqlx::Pool<sqlx::Postgres> = db::connection::establish_connection(&env).await;
+    info!("🚀 Postgres is connected");
     let redis_pool = db::connection::create_redis_connection(&env)
         .await
         .unwrap_or_else(|err| {
@@ -30,6 +32,11 @@ async fn main() {
             std::process::exit(1);
         });
     info!("🚀 Redis is connected");
+
+    let kafka_producer = KafkaProducer::new(&env.kafka_url).unwrap_or_else(|err| {
+        error!("❌ Failed to create Kafka producer: {}", err);
+        std::process::exit(1);
+    });
 
     let routes = api::auth::controller::auth_routes(pool, redis_pool);
 

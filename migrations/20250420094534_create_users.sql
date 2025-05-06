@@ -1,5 +1,6 @@
 -- Add migration script here
 -- You must first create the user_role enum in Postgres
+
 CREATE TYPE user_role AS ENUM ('user', 'admin', 'moderator');
 
 CREATE TABLE users (

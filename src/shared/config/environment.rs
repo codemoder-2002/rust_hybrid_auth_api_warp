@@ -3,10 +3,12 @@ use std::env;
 #[derive(Debug, Clone)]
 pub struct Environment {
     pub database_url: String,
-    #[allow(dead_code)]
+
     pub jwt_secret: String,
-    #[allow(dead_code)]
+
     pub redis_url: String,
+
+    pub kafka_url: String,
 }
 
 impl Environment {
@@ -20,10 +22,14 @@ impl Environment {
         let redis_url =
             env::var("REDIS_URL").map_err(|_| "Missing required env: REDIS_URL".to_string())?;
 
+        let kafka_url =
+            env::var("KAFKA_URL").map_err(|_| "Missing required env: REDIS_URL".to_string())?;
+
         Ok(Self {
             database_url,
             jwt_secret,
             redis_url,
+            kafka_url,
         })
     }
 }
