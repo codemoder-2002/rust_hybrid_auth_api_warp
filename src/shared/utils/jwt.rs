@@ -2,6 +2,7 @@
 use crate::shared::error::AppError;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -63,4 +64,10 @@ pub struct EmailVerificationClaims {
 
 pub fn generate_email_verification_token() -> String {
     Uuid::new_v4().to_string()
+}
+
+pub fn generate_2fa_code() -> String {
+    let mut rng = rand::thread_rng();
+    let code: u32 = rng.gen_range(100000..999999);
+    code.to_string()
 }

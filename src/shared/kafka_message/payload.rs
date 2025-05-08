@@ -3,7 +3,14 @@ use serde::Serialize;
 #[derive(Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum KafkaPayload {
-    UserSignup { user_id: String, email: String },
-    VerificationCode { user_id: String, code: String },
+    EmailVerificationToken { email: String, token: String },
+    TwoFactorCode { email: String, code: String },
+    ChangePasswordCode { email: String, code: String },
     LogEvent { level: String, message: String },
 }
+
+// EmailVerificationToken,
+// TwoFactorCode,
+// ChangePasswordCode,
+// LogEvent,
+// Custom(String),

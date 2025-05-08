@@ -1,12 +1,14 @@
-use deadpool_redis::{Connection, Pool};
-use redis::AsyncCommands;
+use std::sync::Arc;
+
+use deadpool_redis::Connection;
+
 use redis::aio::MultiplexedConnection;
 use serde_json::json;
 pub use sqlx::PgPool;
 use uuid::Uuid;
 use warp::{
     Rejection, Reply,
-    filters::log::Info,
+    http::StatusCode,
     http::{HeaderValue, header},
 };
 
@@ -14,96 +16,166 @@ use super::repository;
 use crate::{
     api::auth::dto::{LoginRequest, RegisterRequest},
     schema::models::User,
-    shared::utils::jwt::*,
-    shared::{error::*, utils::hash::verify_password},
+    shared::{
+        error::*,
+        kafka_message::{payload, producer::KafkaProducer, topics::KafkaTopic},
+        utils::{hash::verify_password, jwt::*},
+    },
 };
 use tracing::*;
 
 pub async fn login(
     pool: PgPool,
     mut redis_conn: Connection,
+    kafka: Arc<KafkaProducer>,
     body: LoginRequest,
 ) -> Result<Box<dyn Reply>, warp::Rejection> {
-    let user: User = repository::find_user_by_email(&pool, &body.email)
+    // 1. Find user by email
+    let user = repository::find_user_by_email(&pool, &body.email)
         .await
         .map_err(|_| warp::reject::custom(AppError::EmailNotFound))?;
 
-    if !user.email_verified {
-        let body = json!({
-            "email_verified": false,
-            "email": user.email,
-        });
-        return Ok(Box::new(warp::reply::json(&body)));
-    }
-
+    // 2. Get password hash (fail early if not found)
     let password_hash = user
         .password_hash
         .clone()
         .ok_or_else(|| warp::reject::custom(AuthError::InvalidCredentials))?;
 
+    // 3. If email not verified, store password and respond
+    if !user.email_verified {
+        if let Err(err) = repository::update_user_password(&pool, user.id, &password_hash).await {
+            tracing::error!("Failed to update password: {:?}", err);
+            let body = json!({ "success": false, "message": "Failed to save password" });
+            return Ok(Box::new(warp::reply::with_status(
+                warp::reply::json(&body),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )));
+        }
+
+        // TODO: Trigger email verification here via Kafka if needed
+
+        let token = generate_email_verification_token();
+
+        if let Err(err) = kafka
+            .send_event(
+                KafkaTopic::EmailVerificationToken,
+                &user.email,
+                payload::KafkaPayload::EmailVerificationToken {
+                    email: user.email.clone(),
+                    token,
+                },
+            )
+            .await
+        {
+            tracing::error!("Failed to send Kafka event: {:?}", err);
+        }
+
+        let response = json!({
+            "message": "User registered but not verified. A new verification link has been sent.",
+            "success": true,
+            "email_verification": false,
+        });
+
+        return Ok(Box::new(warp::reply::with_status(
+            warp::reply::json(&response),
+            StatusCode::OK,
+        )));
+    }
+
+    // 4. Verify password
     if !verify_password(&body.password, &password_hash)? {
         return Err(warp::reject::custom(AuthError::InvalidCredentials));
     }
 
+    // 5. Handle 2FA
     if user.is_two_factor_enabled {
-        if let Some(code) = &body.code {
-            let stored_code = repository::get2fa_code_redis(&mut redis_conn, &user.email).await?;
+        match &body.code {
+            Some(code) => {
+                let stored_code =
+                    repository::get2fa_code_redis(&mut redis_conn, &user.email).await?;
 
-            match stored_code {
-                Some(ref stored) if stored == code => {
-                    repository::delete_2fa_code_redis(&mut redis_conn, &user.email).await?;
+                if let Some(ref stored) = stored_code {
+                    if stored == code {
+                        repository::delete_2fa_code_redis(&mut redis_conn, &user.email).await?;
 
-                    let access_token =
-                        generate_access_token(user.id.to_string(), user.email.clone())?;
-                    let refresh_token = generate_refresh_token()?;
-                    let session_id = Uuid::new_v4().to_string();
-
-                    repository::store_refresh_token(
-                        &mut redis_conn,
-                        &session_id,
-                        &refresh_token,
-                        user.id.to_string(),
-                    )
-                    .await?;
-
-                    let response_body = json!({
-                        "access_token": access_token,
-                        "session_id": session_id,
-                        "user": {
-                            "id": user.id,
-                            "email": user.email,
-                            "role": user.role
-                        }
-                    });
-
-                    let cookie_value = format!(
-                        "refresh_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800;",
-                        refresh_token
-                    );
-
-                    let reply = warp::reply::json(&response_body);
-                    let reply_with_cookie = warp::reply::with_header(
-                        reply,
-                        header::SET_COOKIE,
-                        HeaderValue::from_str(&cookie_value).unwrap(),
-                    );
-
-                    return Ok(Box::new(reply_with_cookie));
+                        return generate_success_response(&mut redis_conn, &user).await;
+                    }
                 }
-                _ => return Err(warp::reject::custom(AuthError::InvalidCredentials)),
+
+                return Err(warp::reject::custom(AuthError::InvalidCredentials));
             }
-        } else {
-            let body = json!({ "two_factor": true });
-            return Ok(Box::new(warp::reply::json(&body)));
+            None => {
+                //send 2fa code
+
+                let code: String = generate_2fa_code();
+
+                if let Err(err) = kafka
+                    .send_event(
+                        KafkaTopic::TwoFactorCode,
+                        &user.email,
+                        payload::KafkaPayload::TwoFactorCode {
+                            email: user.email.clone(),
+                            code,
+                        },
+                    )
+                    .await
+                {
+                    tracing::error!("Failed to send Kafka event: {:?}", err);
+                }
+
+                let body = json!({ "two_factor": true });
+                return Ok(Box::new(warp::reply::json(&body)));
+            }
         }
     }
-    let body = json!({ "two_factor": false });
-    Ok(Box::new(warp::reply::json(&body)))
+
+    // 6. No 2FA, successful login
+    generate_success_response(&mut redis_conn, &user).await
+}
+
+fn generate_cookie(value: &str) -> String {
+    format!(
+        "refresh_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800;",
+        value
+    )
+}
+
+async fn generate_success_response(
+    redis_conn: &mut Connection,
+    user: &User,
+) -> Result<Box<dyn Reply>, warp::Rejection> {
+    let access_token = generate_access_token(user.id.to_string(), user.email.clone())?;
+    let refresh_token = generate_refresh_token()?;
+    let session_id = Uuid::new_v4().to_string();
+
+    repository::store_refresh_token(redis_conn, &session_id, &refresh_token, user.id.to_string())
+        .await?;
+
+    let body = json!({
+        "access_token": access_token,
+        "session_id": session_id,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role
+        },
+        "two_factor": false
+    });
+
+    let reply = warp::reply::json(&body);
+    let reply_with_cookie = warp::reply::with_header(
+        reply,
+        header::SET_COOKIE,
+        HeaderValue::from_str(&generate_cookie(&refresh_token)).unwrap(),
+    );
+
+    Ok(Box::new(reply_with_cookie))
 }
 
 pub async fn register(
     _pool: PgPool,
     mut redis_pool: Connection,
+    kafka: Arc<KafkaProducer>,
     body: RegisterRequest,
 ) -> Result<impl Reply, Rejection> {
     match repository::find_user_by_email(&_pool, &body.email).await {
@@ -143,6 +215,22 @@ pub async fn register(
             info!("New user created: {:?}", new_user);
 
             // repository::send_email_verification_kafka( new_user.id).await?;
+
+            let token = generate_email_verification_token();
+
+            if let Err(err) = kafka
+                .send_event(
+                    KafkaTopic::EmailVerificationToken,
+                    &new_user.email,
+                    payload::KafkaPayload::EmailVerificationToken {
+                        email: new_user.email.clone(),
+                        token,
+                    },
+                )
+                .await
+            {
+                tracing::error!("Failed to send Kafka event: {:?}", err);
+            }
 
             Ok(warp::reply::json(&serde_json::json!({
                 "message": "User registered successfully. Verification email sent."

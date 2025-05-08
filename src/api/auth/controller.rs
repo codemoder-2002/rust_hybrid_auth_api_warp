@@ -1,9 +1,13 @@
+use std::sync::Arc;
+
 use super::service;
-use crate::api::auth::dto::*;
+use crate::api::auth::dto::{LoginRequest, RegisterRequest};
 use crate::shared::error::AppError;
 use crate::shared::error::handlers::handle_rejection;
+use crate::shared::kafka_message::producer::KafkaProducer;
 use crate::shared::utils::validator::with_validated_body;
 use deadpool_redis::{Connection, Pool};
+
 // use redis::aio::MultiplexedConnection;
 
 use sqlx::PgPool;
@@ -14,6 +18,12 @@ fn with_db(
     pool: PgPool,
 ) -> impl Filter<Extract = (PgPool,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || pool.clone())
+}
+
+fn with_kafka(
+    kafka: Arc<KafkaProducer>,
+) -> impl Filter<Extract = (Arc<KafkaProducer>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || kafka.clone())
 }
 
 pub fn with_redis(
@@ -28,14 +38,19 @@ pub fn with_redis(
         }
     })
 }
+
+// let kafka_filter = warp::any().map(move || kafka.clone());
+
 pub fn auth_routes(
     pool: PgPool,
     redis_pool: Pool,
+    kafka: Arc<KafkaProducer>,
 ) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
     let credentials_login = warp::path!("login")
         .and(warp::post())
         .and(with_db(pool.clone()))
         .and(with_redis(redis_pool.clone()))
+        .and(with_kafka(kafka.clone()))
         .and(with_validated_body::<LoginRequest>()) // ✅ this already extracts and validates
         .and_then(service::login);
 
@@ -43,6 +58,7 @@ pub fn auth_routes(
         .and(warp::post())
         .and(with_db(pool.clone()))
         .and(with_redis(redis_pool.clone()))
+        .and(with_kafka(kafka.clone()))
         .and(with_validated_body::<RegisterRequest>())
         .and_then(service::register);
 

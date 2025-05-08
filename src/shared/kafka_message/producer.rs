@@ -4,6 +4,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde_json;
 use std::time::Duration;
+use tracing::*;
 
 pub struct KafkaProducer {
     producer: FutureProducer,
@@ -37,11 +38,11 @@ impl KafkaProducer {
 
         match delivery_status {
             Ok(delivery) => {
-                println!("✅ Delivered to '{}': {:?}", topic.as_str(), delivery);
+                info!("✅ Delivered to '{}': {:?}", topic.as_str(), delivery);
                 Ok(())
             }
             Err((e, _)) => {
-                eprintln!("❌ Kafka error: {:?}", e);
+                error!("❌ Kafka error: {:?}", e);
                 Err(anyhow::anyhow!(e.to_string()))
             }
         }

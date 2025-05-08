@@ -1,7 +1,3 @@
-// use rdkafka::{
-//     ClientConfig,
-//     producer::{FutureProducer, FutureRecord},
-// };
 use deadpool_redis::{Connection, redis::AsyncCommands};
 
 use sqlx::PgPool;
@@ -55,14 +51,21 @@ pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, Ap
 pub async fn update_user_password(
     pool: &PgPool,
     user_id: Uuid,
-    new_password: &String,
+    new_password: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+    let result = sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
         .bind(new_password)
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| AppError::InternalServerError)?; // 💡 Proper error propagation
+        .map_err(|err| {
+            tracing::error!("Failed to update user password: {:?}", err);
+            AppError::InternalServerError
+        })?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::EmailNotFound); // Custom error for "user not found"
+    }
 
     Ok(())
 }

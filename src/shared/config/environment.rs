@@ -9,6 +9,7 @@ pub struct Environment {
     pub redis_url: String,
 
     pub kafka_url: String,
+    // pub frontend_url: String,
 }
 
 impl Environment {
@@ -23,13 +24,17 @@ impl Environment {
             env::var("REDIS_URL").map_err(|_| "Missing required env: REDIS_URL".to_string())?;
 
         let kafka_url =
-            env::var("KAFKA_URL").map_err(|_| "Missing required env: REDIS_URL".to_string())?;
+            env::var("KAFKA_URL").map_err(|_| "Missing required env: KAFKA_URL".to_string())?;
+
+        // let frontend_url = env::var("FRONTEND_URL")
+        //     .map_err(|_| "Missing required env: FRONTEND_URL".to_string())?;
 
         Ok(Self {
             database_url,
             jwt_secret,
             redis_url,
             kafka_url,
+            // frontend_url,
         })
     }
 }
