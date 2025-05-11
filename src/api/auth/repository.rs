@@ -1,5 +1,6 @@
 use deadpool_redis::{Connection, redis::AsyncCommands};
 
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tracing::warn;
 use uuid::Uuid;
@@ -8,8 +9,8 @@ use uuid::Uuid;
 
 use crate::{
     api::auth::dto::*,
-    schema::models::User,
-    shared::{error::AppError, utils::hash::hash_password},
+    schema::models::{Account, User},
+    shared::error::AppError,
 };
 
 pub async fn find_user_by_email(_pool: &PgPool, email: &String) -> Result<User, AppError> {
@@ -20,16 +21,36 @@ pub async fn find_user_by_email(_pool: &PgPool, email: &String) -> Result<User, 
         .map_err(|_| AppError::EmailNotFound) // you can replace with your own error handler
 }
 
-pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, AppError> {
-    let hashed_password =
-        hash_password(&req.password).map_err(|_| AppError::InternalServerError)?;
-    println!("hashed_password: {:?}", hashed_password);
+pub async fn find_user_by_id(_pool: &PgPool, user_id: Uuid) -> Result<User, AppError> {
+    sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(_pool)
+        .await
+        .map_err(|_| AppError::EmailNotFound) // you can replace with your own error handler
+}
 
+pub async fn find_account_by_provider_id(
+    pool: &PgPool,
+    provider: &str,
+    provider_account_id: &str,
+) -> Result<Option<Account>, AppError> {
+    let account = sqlx::query_as::<_, Account>(
+        "SELECT * FROM accounts WHERE provider = $1 AND provider_account_id = $2",
+    )
+    .bind(provider)
+    .bind(provider_account_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| AppError::InternalServerError)?;
+    Ok(account)
+}
+
+pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, AppError> {
     let user = sqlx::query_as::<_, User>(
         "INSERT INTO users (
-            id,email, first_name, last_name, email_verified, is_two_factor_enabled, role
+            id,email, first_name, last_name, email_verified, is_two_factor_enabled, role , password_hash
          )
-    VALUES ($1, $2, $3, $4, $5, $6, $7::user_role)
+    VALUES ($1, $2, $3, $4, $5, $6, $7::user_role , $8)
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -38,7 +59,8 @@ pub async fn create_user(pool: &PgPool, req: RegisterRequest) -> Result<User, Ap
     .bind(req.last_name)
     .bind(false) // default value for email_verified
     .bind(false) // default value for 2FA
-    .bind("user") // role string or UserRole enum as needed
+    .bind("user")
+    .bind(req.password) // role string or UserRole enum as needed
     .fetch_one(pool)
     .await
     .map_err(|e| {
@@ -70,33 +92,80 @@ pub async fn update_user_password(
     Ok(())
 }
 
-pub async fn send_email_verification_kafka(email: EmailMessage) {
-    let payload = serde_json::to_string(&email).expect("Failed to serialize email message");
+pub async fn update_user_email_verified(pool: &PgPool, user_id: Uuid) -> Result<(), AppError> {
+    let result = sqlx::query("UPDATE users SET email_verified = TRUE WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to verify the user's email: {:?}", err);
+            AppError::InternalServerError
+        })?;
 
-    // let record = FutureRecord::to(topic).payload(&payload).key(&email);
+    if result.rows_affected() == 0 {
+        return Err(AppError::EmailNotFound); // Custom error for "user not found"
+    }
 
-    // match producer.send(record, 0).await {
-    //     Ok(_) => println!("Message sent to Kafka"),
-    //     Err(e) => eprintln!("Failed to send message to Kafka: {}", e),
-    // }
+    Ok(())
 }
 
 pub async fn save_email_verification_token(
     redis_conn: &mut Connection,
     email: String,
-    token: String,
+    token: &str,
 ) -> Result<(), AppError> {
-    // Key in Redis: email_verification_token:{email}
-    let key = format!("email_verification_token:{}", email);
+    // Key format: email_verification_token:{token}
+    let redis_key = format!("email_verification_token:{}", token);
 
-    // Store value as JSON (can be plain string if you want)
-    let value = serde_json::json!({ "token": token }).to_string();
+    // Store value as JSON string
+    let redis_value = json!({ "email": email }).to_string();
 
-    // Token expiration: 15 minutes
+    // Expire in 15 minutes
     let expiry_seconds = 15 * 60;
 
     redis_conn
-        .set_ex::<_, _, ()>(&key, value, expiry_seconds)
+        .set_ex::<_, _, ()>(&redis_key, redis_value, expiry_seconds)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to save email verification token to Redis: {}", err);
+            AppError::InternalServerError
+        })?;
+
+    Ok(())
+}
+
+pub async fn get_email_verification_token(
+    redis_conn: &mut Connection,
+    token: &str,
+) -> Result<String, AppError> {
+    // 1. Build Redis key using the token
+    let key = format!("email_verification_token:{}", token);
+
+    // 2. Fetch the stored JSON string from Redis
+    let json: String = redis_conn.get::<_, String>(&key).await.map_err(|err| {
+        tracing::error!("Redis GET failed: {}", err);
+        AppError::InternalServerError
+    })?;
+
+    // 3. Parse the JSON to extract the "email" field
+    let email = serde_json::from_str::<Value>(&json)
+        .ok()
+        .and_then(|v| v.get("email")?.as_str().map(str::to_owned))
+        .ok_or(AppError::InternalServerError)?;
+
+    // 4. Return the extracted email
+    Ok(email)
+}
+
+pub async fn delete_email_verification_token(
+    redis_conn: &mut Connection,
+    token: &String,
+) -> Result<(), AppError> {
+    // Key in Redis: email_verification_token:{email}
+    let key = format!("email_verification_token:{}", token);
+
+    redis_conn
+        .del::<_, usize>(&key)
         .await
         .map_err(|_| AppError::InternalServerError)?;
 
@@ -131,7 +200,7 @@ pub async fn store_refresh_token(
     Ok(())
 }
 
-pub async fn get2fa_code_redis(
+pub async fn get_2fa_code(
     redis_conn: &mut Connection,
     email: &str,
 ) -> Result<Option<String>, AppError> {
@@ -144,7 +213,21 @@ pub async fn get2fa_code_redis(
     Ok(stored_code)
 }
 
-pub async fn delete_2fa_code_redis(
+pub async fn store_2fa_code(
+    redis_conn: &mut Connection,
+    email: &str,
+    code: &str,
+) -> Result<(), AppError> {
+    let key = format!("2fa:{}", email);
+    let expiry_seconds: u64 = 7 * 24 * 60 * 60;
+    redis_conn
+        .set_ex::<_, _, ()>(&key, code, expiry_seconds)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+    Ok(())
+}
+
+pub async fn delete_2fa_code(
     redis_conn: &mut Connection,
     email: &str,
 ) -> Result<Option<String>, AppError> {
@@ -155,4 +238,30 @@ pub async fn delete_2fa_code_redis(
         .map_err(|_| AppError::InternalServerError)?;
 
     Ok(stored_code)
+}
+
+pub async fn link_oauth_account(
+    pool: &PgPool,
+    user_id: Uuid,
+    provider: &str,
+    provider_account_id: &str,
+    access_token: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "
+        INSERT INTO accounts (
+            user_id, provider, provider_account_id, access_token
+        )
+        VALUES ($1, $2, $3, $4)
+        ",
+    )
+    .bind(user_id)
+    .bind(provider)
+    .bind(provider_account_id)
+    .bind(access_token)
+    .execute(pool)
+    .await
+    .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(())
 }

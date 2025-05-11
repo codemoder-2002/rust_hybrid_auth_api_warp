@@ -50,3 +50,19 @@ pub struct EmailMessage {
     subject: String,
     code: String,
 }
+#[derive(Deserialize, Validate)]
+pub struct EmailVerification {
+    #[validate(length(min = 6))]
+    pub token: String,
+}
+
+#[derive(Deserialize, Validate)]
+pub struct TwofaRequest {
+    #[validate(email)]
+    pub email: String,
+}
+
+#[derive(Deserialize, Validate)]
+pub struct OAuthCallbackBody {
+    pub code: String,
+}

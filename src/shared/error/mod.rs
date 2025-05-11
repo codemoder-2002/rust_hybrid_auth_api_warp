@@ -21,10 +21,6 @@ pub enum AuthError {
     InvalidToken,
     #[error("token expired")]
     TokenExpired,
-    #[error("token not found")]
-    TokenNotFound,
-    #[error("token already used")]
-    TokenAlreadyUsed,
 }
 impl warp::reject::Reject for AuthError {}
 
@@ -50,6 +46,12 @@ pub enum AppError {
     InternalServerError,
     #[error("user already exists")]
     UserAlreadyExists,
+
+    #[error("Invalid Token")]
+    InvalidToken,
+
+    #[error("Email already verified")]
+    EmailAlreadyVerified,
 }
 impl warp::reject::Reject for AppError {}
 
