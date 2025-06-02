@@ -124,6 +124,7 @@ pub fn auth_routes(
         .or(verify_email)
         .or(request_2fa)
         // .or(oauth_callback)
+        // .or(oauth_callback)
         .or(logout)
         .recover(handle_rejection)
         .boxed()

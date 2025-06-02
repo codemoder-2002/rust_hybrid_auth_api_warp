@@ -403,7 +403,19 @@ pub async fn request_2fa(
 //     let token_response = exchange_google_code(&body.code)
 //         .await
 //         .map_err(warp::reject::custom)?;
+// pub async fn oauth_callback(
+//     pool: PgPool,
+//     body: OAuthCallbackBody,
+// ) -> Result<impl warp::Reply, warp::Rejection> {
+//     // Step 1: Exchange authorization code for access token
+//     let token_response = exchange_google_code(&body.code)
+//         .await
+//         .map_err(warp::reject::custom)?;
 
+//     // Step 2: Use access token to fetch user info from Google
+//     let user_info = fetch_google_user_info(&token_response.access_token)
+//         .await
+//         .map_err(warp::reject::custom)?;
 //     // Step 2: Use access token to fetch user info from Google
 //     let user_info = fetch_google_user_info(&token_response.access_token)
 //         .await
@@ -417,7 +429,17 @@ pub async fn request_2fa(
 //             .map_err(warp::reject::custom)?,
 //         Err(e) => return Err(warp::reject::custom(e)),
 //     };
+//     // Step 3: Check if user exists, else register
+//     let user = match repository::find_user_by_email(&pool, &user_info.email).await {
+//         Ok(existing_user) => existing_user,
+//         Err(AppError::EmailNotFound) => repository::create_user_from_oauth(&pool, &user_info)
+//             .await
+//             .map_err(warp::reject::custom)?,
+//         Err(e) => return Err(warp::reject::custom(e)),
+//     };
 
+//     // Step 4: Generate your own session token (JWT)
+//     let jwt = generate_access_token(&user.id, &user.email).map_err(warp::reject::custom)?;
 //     // Step 4: Generate your own session token (JWT)
 //     let jwt = generate_access_token(&user.id, &user.email).map_err(warp::reject::custom)?;
 
@@ -426,7 +448,14 @@ pub async fn request_2fa(
 //         "token": jwt,
 //         "user": user,
 //     }));
+//     // Step 5: Respond with token + user info
+//     let response = warp::reply::json(&serde_json::json!({
+//         "token": jwt,
+//         "user": user,
+//     }));
 
+//     Ok(response)
+// }
 //     Ok(response)
 // }
 
