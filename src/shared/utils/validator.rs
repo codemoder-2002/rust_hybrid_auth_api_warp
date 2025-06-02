@@ -11,6 +11,7 @@ where
             Ok(_) => Ok(body),
             Err(errors) => {
                 let message = format!("Validation failed: {}", errors);
+                eprintln!("[validator] Validation error: {}", message);
                 Err(warp::reject::custom(
                     crate::shared::error::AppError::ValidationError(message),
                 ))

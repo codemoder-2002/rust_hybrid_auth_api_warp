@@ -21,6 +21,10 @@ pub enum AuthError {
     InvalidToken,
     #[error("token expired")]
     TokenExpired,
+    #[error("token not found")]
+    TokenNotFound,
+    #[error("token already used")]
+    TokenAlreadyUsed,
 }
 impl warp::reject::Reject for AuthError {}
 
@@ -40,7 +44,7 @@ pub enum AppError {
     InvalidAuthHeaderError,
     #[error("no permission")]
     NoPermissionError,
-    #[error("validation error: {0}")]
+    #[error("Validation error: {0}")]
     ValidationError(String),
     #[error("internal server error")]
     InternalServerError,
@@ -52,13 +56,18 @@ pub enum AppError {
 
     #[error("Email already verified")]
     EmailAlreadyVerified,
+
+    #[error("Missing Token")]
+    MissingToken,
 }
 impl warp::reject::Reject for AppError {}
 
 #[derive(Serialize, Debug)]
 pub struct ErrorResponse {
-    message: String,
-    status: String,
+    pub message: String,
+    pub code: Option<String>,               // Optional error code
+    pub details: Option<serde_json::Value>, // Optional extra data
+    pub status: u16,                        // Status as number, not string
 }
 
 #[derive(Error, Debug)]

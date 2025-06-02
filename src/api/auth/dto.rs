@@ -20,7 +20,7 @@ pub struct LoginResponse {
     pub user_id: i32,
 }
 
-#[derive(Deserialize, Debug, Validate)]
+#[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct RegisterRequest {
     #[validate(length(min = 2, max = 30))]
     pub first_name: String,

@@ -9,6 +9,8 @@ use warp::{
     Rejection, Reply,
     http::StatusCode,
     http::{HeaderValue, header},
+    reject,
+    reply::json,
 };
 
 use super::{
@@ -47,39 +49,20 @@ pub async fn login(
 
     // 3. If email not verified, store password and respond
     if !user.email_verified {
+        // Update password in DB if needed (you had this part)
         if let Err(err) = repository::update_user_password(&pool, user.id, &password_hash).await {
             tracing::error!("Failed to update password: {:?}", err);
             return Err(warp::reject::custom(AuthError::EmailNotVerified));
         }
 
-        // TODO: Trigger email verification here via Kafka if needed
-
-        let token = generate_email_verification_token();
-
-        if let Err(err) = kafka
-            .send_event(
-                KafkaTopic::EmailVerificationToken,
-                &user.email,
-                payload::KafkaPayload::EmailVerificationToken {
-                    email: user.email.clone(),
-                    token,
-                },
-            )
-            .await
-        {
-            tracing::error!("Failed to send Kafka event: {:?}", err);
-        }
-
-        let response = json!({
-            "message": "User registered but not verified. A new verification link has been sent.",
-            "success": true,
-            "email_verification": false,
-        });
-
-        return Ok(Box::new(warp::reply::with_status(
-            warp::reply::json(&response),
-            StatusCode::OK,
-        )));
+        // Call shared email verification handler
+        return handle_email_verification(
+            redis_conn,
+            kafka,
+            user.email.clone(),
+            "Email not verified. Verification email sent.",
+        )
+        .await;
     }
 
     // 4. Verify password
@@ -156,9 +139,12 @@ async fn generate_success_response(
         "user": {
             "id": user.id,
             "email": user.email,
-            "role": user.role
+            "role": user.role,
+            "name":user.last_name.clone() + " " + &user.first_name,
+            "profile_picture": user.profile_picture.clone(),
         },
-        "two_factor": false
+        "two_factor": false,
+        "success": true,
     });
 
     let reply = warp::reply::json(&body);
@@ -175,18 +161,37 @@ pub async fn register(
     pool: PgPool,
     redis_pool: Connection,
     kafka: Arc<KafkaProducer>,
-    body: RegisterRequest,
+    mut body: RegisterRequest,
 ) -> Result<impl Reply, Rejection> {
+    println!("[REGISTER] Handler called");
+
+    // 1. Check if the user exists
     match repository::find_user_by_email(&pool, &body.email).await {
         Ok(existing_user) => {
             if existing_user.email_verified {
-                return Err(warp::reject::custom(AppError::UserAlreadyExists));
+                println!("[REGISTER] User already exists and is verified");
+                return Err(reject::custom(AppError::UserAlreadyExists));
             }
-            // User exists but not verified — update password and resend verification
-            let password_hash = hash_password(&body.password)?;
 
-            // User exists but not verified — update password and resend verification
-            repository::update_user_password(&pool, existing_user.id, &password_hash).await?;
+            // User exists but not verified – update password
+            println!("[REGISTER] User exists but not verified – updating password");
+
+            let password_hash = match hash_password(&body.password) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    eprintln!("[REGISTER] Password hashing failed: {:?}", err);
+                    return Err(reject::custom(err));
+                }
+            };
+
+            // User exists but not verified – update password and trigger email verification
+            if let Err(err) =
+                repository::update_user_password(&pool, existing_user.id, &password_hash).await
+            {
+                eprintln!("[REGISTER] Failed to update password: {:?}", err);
+                return Err(reject::custom(err));
+            }
+
             return handle_email_verification(
                 redis_pool,
                 kafka,
@@ -197,9 +202,25 @@ pub async fn register(
         }
 
         Err(AppError::EmailNotFound) => {
-            let mut body = body; // Make it mutable if not already
-            body.password = hash_password(&body.password)?;
-            let new_user = repository::create_user(&pool, body).await?;
+            println!("[REGISTER] No existing user. Proceeding to register");
+
+            let password_hash = match hash_password(&body.password) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    eprintln!("[REGISTER] Password hashing failed: {:?}", err);
+                    return Err(reject::custom(err));
+                }
+            };
+            body.password = password_hash;
+
+            let new_user = match repository::create_user(&pool, body).await {
+                Ok(user) => user,
+                Err(err) => {
+                    eprintln!("[REGISTER] Failed to create user: {:?}", err);
+                    return Err(reject::custom(err));
+                }
+            };
+
             return handle_email_verification(
                 redis_pool,
                 kafka,
@@ -209,23 +230,27 @@ pub async fn register(
             .await;
         }
 
-        Err(e) => return Err(warp::reject::custom(e)),
+        Err(err) => {
+            eprintln!("[REGISTER] Unexpected error when finding user: {:?}", err);
+            return Err(reject::custom(err));
+        }
     }
 }
 
+// This helper wraps the email verification logic, used in login and register
 async fn handle_email_verification(
-    mut redis_pool: Connection,
+    mut redis_conn: Connection,
     kafka: Arc<KafkaProducer>,
     email: String,
     message: &str,
-) -> Result<impl Reply, Rejection> {
+) -> Result<Box<dyn Reply>, Rejection> {
     let token = generate_email_verification_token();
 
-    repository::save_email_verification_token(&mut redis_pool, email.clone(), &token).await?;
+    repository::save_email_verification_token(&mut redis_conn, email.clone(), &token).await?;
 
     if let Err(err) = kafka
         .send_event(
-            KafkaTopic::TwoFactorCode,
+            KafkaTopic::EmailVerificationToken, // <-- fix topic here, see below
             &email,
             payload::KafkaPayload::EmailVerificationToken {
                 email: email.clone(),
@@ -237,15 +262,61 @@ async fn handle_email_verification(
         tracing::error!("Failed to send Kafka event: {:?}", err);
     }
 
-    Ok(warp::reply::json(
-        &serde_json::json!({ "message": message }),
+    let reply = warp::reply::json(&serde_json::json!({ "message": message }));
+
+    Ok(Box::new(reply))
+}
+
+pub async fn refresh_token(
+    pool: PgPool,
+    mut redis_conn: Connection,
+    cookies: warp::http::HeaderMap,
+) -> Result<impl Reply, Rejection> {
+    // 1. Extract refresh_token from cookie
+    let cookie_header = cookies.get("cookie").and_then(|h| h.to_str().ok());
+
+    let refresh_token = cookie_header
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|c| {
+                let parts: Vec<&str> = c.trim().splitn(2, '=').collect();
+                if parts.get(0)? == &"refresh_token" {
+                    parts.get(1).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .ok_or_else(|| warp::reject::custom(AppError::MissingToken))?;
+
+    // 2. Look up session by refresh token in Redis
+    let (user_id, session_id) =
+        repository::get_session_by_refresh_token(&mut redis_conn, &refresh_token)
+            .await
+            .map_err(warp::reject::custom)?;
+
+    // 3. Generate new access token
+    let user = repository::find_user_by_id(&pool, &user_id)
+        .await
+        .map_err(warp::reject::custom)?;
+
+    let access_token = generate_access_token(user.id.to_string(), user.email.clone())
+        .map_err(warp::reject::custom)?;
+
+    // 4. Build response
+    let response = json!({
+        "access_token": access_token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role
+        }
+    });
+
+    Ok(warp::reply::with_status(
+        warp::reply::json(&response),
+        StatusCode::OK,
     ))
 }
-
-pub async fn refresh_token(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
-    Ok(warp::reply::json(&"Token refreshed"))
-}
-
 pub async fn verify_email(
     token: String,
     pool: PgPool,
@@ -324,40 +395,40 @@ pub async fn request_2fa(
     Ok(reply)
 }
 
-pub async fn oauth_callback(
-    pool: PgPool,
-    body: OAuthCallbackBody,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    // Step 1: Exchange authorization code for access token
-    let token_response = exchange_google_code(&body.code)
-        .await
-        .map_err(warp::reject::custom)?;
+// pub async fn oauth_callback(
+//     pool: PgPool,
+//     body: OAuthCallbackBody,
+// ) -> Result<impl warp::Reply, warp::Rejection> {
+//     // Step 1: Exchange authorization code for access token
+//     let token_response = exchange_google_code(&body.code)
+//         .await
+//         .map_err(warp::reject::custom)?;
 
-    // Step 2: Use access token to fetch user info from Google
-    let user_info = fetch_google_user_info(&token_response.access_token)
-        .await
-        .map_err(warp::reject::custom)?;
+//     // Step 2: Use access token to fetch user info from Google
+//     let user_info = fetch_google_user_info(&token_response.access_token)
+//         .await
+//         .map_err(warp::reject::custom)?;
 
-    // Step 3: Check if user exists, else register
-    let user = match repository::find_user_by_email(&pool, &user_info.email).await {
-        Ok(existing_user) => existing_user,
-        Err(AppError::EmailNotFound) => repository::create_user_from_oauth(&pool, &user_info)
-            .await
-            .map_err(warp::reject::custom)?,
-        Err(e) => return Err(warp::reject::custom(e)),
-    };
+//     // Step 3: Check if user exists, else register
+//     let user = match repository::find_user_by_email(&pool, &user_info.email).await {
+//         Ok(existing_user) => existing_user,
+//         Err(AppError::EmailNotFound) => repository::create_user_from_oauth(&pool, &user_info)
+//             .await
+//             .map_err(warp::reject::custom)?,
+//         Err(e) => return Err(warp::reject::custom(e)),
+//     };
 
-    // Step 4: Generate your own session token (JWT)
-    let jwt = generate_access_token(&user.id, &user.email).map_err(warp::reject::custom)?;
+//     // Step 4: Generate your own session token (JWT)
+//     let jwt = generate_access_token(&user.id, &user.email).map_err(warp::reject::custom)?;
 
-    // Step 5: Respond with token + user info
-    let response = warp::reply::json(&serde_json::json!({
-        "token": jwt,
-        "user": user,
-    }));
+//     // Step 5: Respond with token + user info
+//     let response = warp::reply::json(&serde_json::json!({
+//         "token": jwt,
+//         "user": user,
+//     }));
 
-    Ok(response)
-}
+//     Ok(response)
+// }
 
 pub async fn logout(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
     // Pretend to return a list of users
@@ -368,3 +439,57 @@ pub async fn me(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
     // Pretend to return a list of users
     Ok(warp::reply::json(&vec!["user1", "user2"]))
 }
+
+pub async fn isUserExist(_pool: PgPool) -> Result<impl Reply, warp::Rejection> {
+    // Pretend to return a list of users
+    Ok(warp::reply::json(&vec!["user1", "user2"]))
+}
+
+// pub fn with_authenticated_user(
+//     pool: PgPool,
+//     mut redis_conn: Connection,
+// ) -> impl Filter<Extract = (Claims, Option<String>), Error = Rejection> + Clone {
+//     warp::header::headers_cloned().and_then(move |headers: warp::http::HeaderMap| {
+//         let redis = redis.clone();
+//         async move {
+//             let access_token = headers
+//                 .get("authorization")
+//                 .and_then(|h| h.to_str().ok())
+//                 .and_then(|s| s.strip_prefix("Bearer "))
+//                 .ok_or_else(|| warp::reject::custom(AuthError::MissingToken))?;
+
+//             let refresh_token = headers.get("x-refresh-token").and_then(|h| h.to_str().ok());
+
+//             let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+
+//             // Validate access token
+//             let validation = Validation::new(Algorithm::HS256);
+//             let result = decode::<Claims>(
+//                 &access_token,
+//                 &DecodingKey::from_secret(jwt_secret.as_ref()),
+//                 &validation,
+//             );
+
+//             match result {
+//                 Ok(token_data) => {
+//                     let claims = token_data.claims;
+//                     let now = Utc::now().timestamp();
+//                     let expires_in = claims.exp as i64 - now;
+
+//                     if expires_in < 300 {
+//                         // Token is expiring in <5 mins, refresh if possible
+//                         if let Some(refresh_token) = refresh_token {
+//                             let new_claims =
+//                                 refresh_access_token(&redis, &claims.sub, refresh_token).await?;
+//                             let new_token = create_jwt(&new_claims)?;
+//                             return Ok((new_claims, Some(new_token)));
+//                         }
+//                     }
+
+//                     Ok((claims, None))
+//                 }
+//                 Err(_) => Err(warp::reject::custom(AuthError::InvalidToken)),
+//             }
+//         }
+//     })
+// }

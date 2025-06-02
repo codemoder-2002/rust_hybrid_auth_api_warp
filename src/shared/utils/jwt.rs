@@ -67,7 +67,7 @@ pub fn generate_email_verification_token() -> String {
 }
 
 pub fn generate_2fa_code() -> String {
-    let mut rng = rand::thread_rng();
-    let code: u32 = rng.gen_range(100000..999999);
+    let mut rng = rand::rng();
+    let code: u32 = rng.random_range(100000..999999);
     code.to_string()
 }

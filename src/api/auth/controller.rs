@@ -6,6 +6,7 @@ use crate::api::auth::dto::{LoginRequest, RegisterRequest};
 use crate::shared::error::AppError;
 use crate::shared::error::handlers::handle_rejection;
 use crate::shared::kafka_message::producer::KafkaProducer;
+use crate::shared::utils::jwt::Claims;
 use crate::shared::utils::validator::with_validated_body;
 use deadpool_redis::{Connection, Pool};
 
@@ -31,11 +32,16 @@ pub fn with_redis(
     pool: Pool,
 ) -> impl Filter<Extract = (Connection,), Error = warp::Rejection> + Clone {
     warp::any().and_then(move || {
+        println!("with_redis called");
         let pool = pool.clone();
         async move {
-            pool.get()
-                .await
-                .map_err(|_err| warp::reject::custom(AppError::InternalServerError))
+            match pool.get().await {
+                Ok(conn) => Ok(conn),
+                Err(e) => {
+                    eprintln!("[with_redis] Failed to get Redis connection: {}", e);
+                    Err(warp::reject::custom(AppError::InternalServerError))
+                }
+            }
         }
     })
 }
@@ -64,8 +70,10 @@ pub fn auth_routes(
         .and_then(service::register);
 
     let refresh = warp::path!("refresh")
-        .and(warp::post())
+        .and(warp::get())
         .and(with_db(pool.clone()))
+        .and(with_redis(redis_pool.clone()))
+        .and(warp::header::headers_cloned()) // 👈 correct way to get cookies
         .and_then(service::refresh_token);
 
     let verify_email = warp::path!("verify-email" / String) // token as path param
@@ -81,11 +89,29 @@ pub fn auth_routes(
         .and(with_validated_body::<TwofaRequest>())
         .and_then(service::request_2fa);
 
-    let oauth_callback = warp::path!("oauth" / "callback")
-        .and(warp::post())
-        .and(with_db(pool.clone())) // Assumes a helper function to inject DB pool
-        .and(warp::body::json()) // Expecting JSON body
-        .and_then(service::oauth_callback); // Call the service layer to handle logic
+    // warp::path("me")
+    //     .and(warp::post())
+    //     .and(with_redis(redis_pool.clone()))
+    //     .and(with_authenticated_user(redis_pool.clone()))
+    //     .and_then(
+    //         |_redis, claims: Claims, maybe_new_token: Option<String>| async move {
+    //             let user_id = claims.sub;
+
+    //             let mut json = serde_json::json!({ "user_id": user_id });
+
+    //             if let Some(new_token) = maybe_new_token {
+    //                 json["new_access_token"] = serde_json::Value::String(new_token);
+    //             }
+
+    //             Ok::<_, warp::Rejection>(warp::reply::json(&json))
+    //         },
+    //     );
+
+    // let oauth_callback = warp::path!("oauth" / "callback")
+    //     .and(warp::post())
+    //     .and(with_db(pool.clone())) // Assumes a helper function to inject DB pool
+    //     .and(warp::body::json()) // Expecting JSON body
+    //     .and_then(service::oauth_callback); // Call the service layer to handle logic
 
     let logout = warp::path!("logout")
         .and(warp::post())
@@ -97,7 +123,7 @@ pub fn auth_routes(
         .or(refresh)
         .or(verify_email)
         .or(request_2fa)
-        .or(oauth_callback)
+        // .or(oauth_callback)
         .or(logout)
         .recover(handle_rejection)
         .boxed()

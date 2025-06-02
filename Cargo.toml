@@ -6,17 +6,17 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.120"
-tokio = { version = "1.45.0", features = ["full"] }
-warp = "0.3"
+tokio = { version = "1.45.1", features = ["full"] }
+warp = "0.3.7"
 dotenvy = "0.15.7"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing-appender = "0.2.3"
 tracing-error = "0.2.1"
 redis = { version = "0.31.0", features = ["tokio-native-tls-comp"] }
-deadpool-redis = { version = "0.20.0", features = ["tokio-native-tls-comp"] }
+deadpool-redis = { version = "0.21.1", features = ["tokio-native-tls-comp"] }
 
-sqlx = { version = "0.8.5", features = [
+sqlx = { version = "0.8.6", features = [
     "runtime-tokio-rustls",
     "postgres",
     "uuid",
@@ -26,7 +26,7 @@ sqlx = { version = "0.8.5", features = [
 ] }
 
 validator = { version = "0.20.0", features = ["derive"] }
-uuid = { version = "1.16.0", features = ["serde", "v4"] }
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
 thiserror = "2.0.12"
 chrono = { version = "0.4.41", features = ["serde"] }
 argon2 = "0.5.3"

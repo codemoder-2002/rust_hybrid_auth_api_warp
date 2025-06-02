@@ -21,7 +21,7 @@ pub async fn find_user_by_email(_pool: &PgPool, email: &String) -> Result<User, 
         .map_err(|_| AppError::EmailNotFound) // you can replace with your own error handler
 }
 
-pub async fn find_user_by_id(_pool: &PgPool, user_id: Uuid) -> Result<User, AppError> {
+pub async fn find_user_by_id(_pool: &PgPool, user_id: &String) -> Result<User, AppError> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_one(_pool)
@@ -200,6 +200,44 @@ pub async fn store_refresh_token(
     Ok(())
 }
 
+pub async fn get_refresh_token(
+    redis_conn: &mut Connection,
+    session_id: &str,
+) -> Result<(), AppError> {
+    // Get a connection from the pool
+
+    // Create the key and value for Redis
+    let key = format!("session:{}", session_id);
+
+    // Use the connection to set the key-value pair with expiration
+    redis_conn
+        .get::<_, usize>(&key)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(())
+}
+
+pub async fn delete_refresh_token(
+    redis_conn: &mut Connection,
+    session_id: &str,
+) -> Result<(), AppError> {
+    // Get a connection from the pool
+
+    // Create the key and value for Redis
+    let key = format!("session:{}", session_id);
+
+    // Set the expiration (7 days in seconds)
+
+    // Use the connection to set the key-value pair with expiration
+    redis_conn
+        .del::<_, usize>(&key)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(())
+}
+
 pub async fn get_2fa_code(
     redis_conn: &mut Connection,
     email: &str,
@@ -240,6 +278,25 @@ pub async fn delete_2fa_code(
     Ok(stored_code)
 }
 
+pub async fn find_account_by_user_id(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<Account>, AppError> {
+    let accounts = sqlx::query_as::<_, Account>("SELECT * FROM accounts WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    Ok(accounts)
+}
+
+pub async fn refresh_access_token() -> Result<String, AppError> {
+    // This function is a placeholder. Implement your logic to refresh the access token.
+    // For example, you might want to generate a new JWT token or fetch a new one from an OAuth provider.
+    Err(AppError::InternalServerError)
+}
+
 pub async fn link_oauth_account(
     pool: &PgPool,
     user_id: Uuid,
@@ -264,4 +321,28 @@ pub async fn link_oauth_account(
     .map_err(|_| AppError::InternalServerError)?;
 
     Ok(())
+}
+
+pub async fn get_session_by_refresh_token(
+    redis: &mut Connection,
+    refresh_token: &str,
+) -> Result<(String, String), AppError> {
+    // Assuming you store session_id and user_id in Redis with refresh token as key
+    let session_info: Option<String> = redis.get(refresh_token).await.map_err(|e| {
+        tracing::error!("Redis error: {:?}", e);
+        return AppError::InternalServerError;
+    })?;
+
+    let session_info = session_info.ok_or_else(|| AppError::InvalidToken)?;
+
+    // Example stored format: "session_id:user_id"
+    let parts: Vec<&str> = session_info.split(':').collect();
+    if parts.len() != 2 {
+        return Err(AppError::InvalidToken);
+    }
+
+    let session_id = parts[0].to_string();
+    let user_id = parts[1].to_string();
+
+    Ok((user_id, session_id))
 }

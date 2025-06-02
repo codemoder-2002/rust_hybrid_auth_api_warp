@@ -44,15 +44,22 @@ async fn main() {
 
     info!("✅ Kafka is connected");
 
+    let health_route = warp::path!("health")
+        .and(warp::get())
+        .map(|| warp::reply::json(&serde_json::json!({ "status": "ok" })));
+
     let routes = api::auth::controller::auth_routes(pool, redis_pool, kafka_producer.clone())
         .recover(shared::error::handlers::handle_rejection)
         .with(warp::log("api"));
+
+    let routes = health_route.or(routes);
 
     let (addr, server) =
         warp::serve(routes).bind_with_graceful_shutdown(([127, 0, 0, 1], 3030), async {
             tokio::signal::ctrl_c()
                 .await
                 .expect("❌ Failed to listen for shutdown signal");
+            info!("⚠️ Shutdown signal received, terminating server...");
         });
 
     info!("🚀 Server running on http://{}", addr);

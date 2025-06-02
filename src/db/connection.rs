@@ -16,13 +16,5 @@ pub async fn establish_connection(env: &Environment) -> PgPool {
 pub async fn create_redis_connection(env: &Environment) -> Result<Pool, Box<dyn Error>> {
     let cfg: Config = Config::from_url(&env.redis_url);
     let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
-
-    // Redis command using redis-rs style inside deadpool connection
-    // let value: String = cmd("GET")
-    //     .arg(&["deadpool/test_key"])
-    //     .query_async(&mut conn)
-    //     .await
-    //     .unwrap();
-
     Ok(pool)
 }
