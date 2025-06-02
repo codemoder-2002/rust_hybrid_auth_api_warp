@@ -39,10 +39,10 @@ pub async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> 
             }
             AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token".to_string()),
             AuthError::TokenExpired => (StatusCode::UNAUTHORIZED, "Token expired".to_string()),
-            AuthError::TokenNotFound => (StatusCode::UNAUTHORIZED, "Token not found".to_string()),
-            AuthError::TokenAlreadyUsed => {
-                (StatusCode::UNAUTHORIZED, "Token already used".to_string())
-            }
+            // AuthError::TokenNotFound => (StatusCode::UNAUTHORIZED, "Token not found".to_string()),
+            // AuthError::TokenAlreadyUsed => {
+            //     (StatusCode::UNAUTHORIZED, "Token already used".to_string())
+            // }
             AuthError::JWTTokenCreationError => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Token generation failed".to_string(),

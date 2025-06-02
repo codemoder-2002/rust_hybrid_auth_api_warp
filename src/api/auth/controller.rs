@@ -81,11 +81,11 @@ pub fn auth_routes(
         .and(with_validated_body::<TwofaRequest>())
         .and_then(service::request_2fa);
 
-    let oauth_callback = warp::path!("oauth" / "callback")
-        .and(warp::post())
-        .and(with_db(pool.clone())) // Assumes a helper function to inject DB pool
-        .and(warp::body::json()) // Expecting JSON body
-        .and_then(service::oauth_callback); // Call the service layer to handle logic
+    // let oauth_callback = warp::path!("oauth" / "callback")
+    //     .and(warp::post())
+    //     .and(with_db(pool.clone())) // Assumes a helper function to inject DB pool
+    //     .and(warp::body::json()) // Expecting JSON body
+    //     .and_then(service::oauth_callback); // Call the service layer to handle logic
 
     let logout = warp::path!("logout")
         .and(warp::post())
@@ -97,7 +97,7 @@ pub fn auth_routes(
         .or(refresh)
         .or(verify_email)
         .or(request_2fa)
-        .or(oauth_callback)
+        // .or(oauth_callback)
         .or(logout)
         .recover(handle_rejection)
         .boxed()
