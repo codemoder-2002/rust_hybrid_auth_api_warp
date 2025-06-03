@@ -130,19 +130,23 @@ async fn generate_success_response(
     let refresh_token = generate_refresh_token()?;
     let session_id = Uuid::new_v4().to_string();
 
-    repository::store_refresh_token(redis_conn, &session_id, &refresh_token, user.id.to_string())
-        .await?;
+    repository::store_refresh_token(
+        redis_conn,
+        &session_id,
+        &refresh_token,
+        user.id.to_string(),
+        user.email.clone(),
+    )
+    .await?;
 
     let body = json!({
         "access_token": access_token,
         "session_id": session_id,
-        "user": {
             "id": user.id,
             "email": user.email,
             "role": user.role,
             "name":user.last_name.clone() + " " + &user.first_name,
-            "profile_picture": user.profile_picture.clone(),
-        },
+            "image": user.profile_picture.clone(),
         "two_factor": false,
         "success": true,
     });
@@ -262,7 +266,7 @@ async fn handle_email_verification(
         tracing::error!("Failed to send Kafka event: {:?}", err);
     }
 
-    let reply = warp::reply::json(&serde_json::json!({ "message": message }));
+    let reply = warp::reply::json(&serde_json::json!({ "success": true , "message": message }));
 
     Ok(Box::new(reply))
 }
@@ -273,6 +277,7 @@ pub async fn refresh_token(
     cookies: warp::http::HeaderMap,
 ) -> Result<impl Reply, Rejection> {
     // 1. Extract refresh_token from cookie
+    println!("cookies: {:?}", cookies);
     let cookie_header = cookies.get("cookie").and_then(|h| h.to_str().ok());
 
     let refresh_token = cookie_header
@@ -287,6 +292,8 @@ pub async fn refresh_token(
             })
         })
         .ok_or_else(|| warp::reject::custom(AppError::MissingToken))?;
+
+    println!("refresh_token: {refresh_token}");
 
     // 2. Look up session by refresh token in Redis
     let (user_id, session_id) =
@@ -305,11 +312,6 @@ pub async fn refresh_token(
     // 4. Build response
     let response = json!({
         "access_token": access_token,
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "role": user.role
-        }
     });
 
     Ok(warp::reply::with_status(

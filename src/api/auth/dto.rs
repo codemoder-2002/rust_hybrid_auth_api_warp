@@ -66,3 +66,10 @@ pub struct TwofaRequest {
 pub struct OAuthCallbackBody {
     pub code: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RefreshTokenData {
+    pub refresh_token: String,
+    pub user_id: String,
+    pub email: String,
+}

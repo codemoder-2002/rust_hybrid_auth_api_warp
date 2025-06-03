@@ -177,6 +177,7 @@ pub async fn store_refresh_token(
     session_id: &str,
     refresh_token: &str,
     user_id: String,
+    user_email: String,
 ) -> Result<(), AppError> {
     // Get a connection from the pool
 
@@ -184,7 +185,8 @@ pub async fn store_refresh_token(
     let key = format!("session:{}", session_id);
     let value = serde_json::json!({
         "refresh_token": refresh_token,
-        "user_id": user_id
+        "user_id": user_id,
+        "email": user_email,
     })
     .to_string();
 
@@ -203,19 +205,20 @@ pub async fn store_refresh_token(
 pub async fn get_refresh_token(
     redis_conn: &mut Connection,
     session_id: &str,
-) -> Result<(), AppError> {
-    // Get a connection from the pool
-
-    // Create the key and value for Redis
+) -> Result<RefreshTokenData, AppError> {
     let key = format!("session:{}", session_id);
 
-    // Use the connection to set the key-value pair with expiration
-    redis_conn
-        .get::<_, usize>(&key)
+    // Get the raw JSON string
+    let value: String = redis_conn
+        .get(&key)
         .await
         .map_err(|_| AppError::InternalServerError)?;
 
-    Ok(())
+    // Deserialize into the struct
+    let token_data: RefreshTokenData =
+        serde_json::from_str(&value).map_err(|_| AppError::InternalServerError)?;
+
+    Ok(token_data)
 }
 
 pub async fn delete_refresh_token(
