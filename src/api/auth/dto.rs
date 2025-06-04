@@ -69,7 +69,7 @@ pub struct OAuthCallbackBody {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RefreshTokenData {
-    pub refresh_token: String,
+    // pub refresh_token: String,
     pub user_id: String,
     pub email: String,
 }

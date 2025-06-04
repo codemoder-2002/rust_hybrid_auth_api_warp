@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use deadpool_redis::Connection;
+use warp::http::header::COOKIE;
 
 use serde_json::json;
 pub use sqlx::PgPool;
-use uuid::Uuid;
+
 use warp::{
     Rejection, Reply,
     http::StatusCode,
     http::{HeaderValue, header},
     reject,
-    reply::json,
 };
 
 use super::{
@@ -18,7 +18,7 @@ use super::{
     repository::{self, store_2fa_code},
 };
 use crate::{
-    api::auth::dto::{LoginRequest, RegisterRequest},
+    api::auth::dto::{LoginRequest, RefreshTokenData, RegisterRequest},
     schema::models::User,
     shared::{
         error::*,
@@ -116,9 +116,15 @@ pub async fn login(
 }
 
 fn generate_cookie(value: &str) -> String {
+    let secure = if std::env::var("RUST_ENV").unwrap_or_default() == "production" {
+        "Secure; SameSite=None"
+    } else {
+        "SameSite=Lax"
+    };
+
     format!(
-        "refresh_token={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800;",
-        value
+        "refresh_token={}; HttpOnly; {}; Path=/; Max-Age=604800;",
+        value, secure
     )
 }
 
@@ -127,12 +133,11 @@ async fn generate_success_response(
     user: &User,
 ) -> Result<Box<dyn Reply>, warp::Rejection> {
     let access_token = generate_access_token(user.id.to_string(), user.email.clone())?;
-    let refresh_token = generate_refresh_token()?;
-    let session_id = Uuid::new_v4().to_string();
+    let refresh_token: String = generate_refresh_token()?;
+    println!("refresh_token: {:?}", refresh_token);
 
     repository::store_refresh_token(
         redis_conn,
-        &session_id,
         &refresh_token,
         user.id.to_string(),
         user.email.clone(),
@@ -141,7 +146,7 @@ async fn generate_success_response(
 
     let body = json!({
         "access_token": access_token,
-        "session_id": session_id,
+        // "session_id": session_id,
             "id": user.id,
             "email": user.email,
             "role": user.role,
@@ -152,11 +157,11 @@ async fn generate_success_response(
     });
 
     let reply = warp::reply::json(&body);
-    let reply_with_cookie = warp::reply::with_header(
-        reply,
-        header::SET_COOKIE,
-        HeaderValue::from_str(&generate_cookie(&refresh_token)).unwrap(),
-    );
+    let cookie_str = generate_cookie(&refresh_token);
+    let cookie_header = HeaderValue::from_str(&cookie_str)
+        .map_err(|_| warp::reject::custom(AppError::InvalidToken))?;
+
+    let reply_with_cookie = warp::reply::with_header(reply, header::SET_COOKIE, cookie_header);
 
     Ok(Box::new(reply_with_cookie))
 }
@@ -270,55 +275,69 @@ async fn handle_email_verification(
 
     Ok(Box::new(reply))
 }
-
 pub async fn refresh_token(
-    pool: PgPool,
     mut redis_conn: Connection,
-    cookies: warp::http::HeaderMap,
-) -> Result<impl Reply, Rejection> {
-    // 1. Extract refresh_token from cookie
-    println!("cookies: {:?}", cookies);
-    let cookie_header = cookies.get("cookie").and_then(|h| h.to_str().ok());
+    refresh_token: String,
+) -> Result<impl warp::Reply, Rejection> {
+    println!("headers: {:}", refresh_token);
+    // let refresh_token = headers
+    //     .get(COOKIE)
+    //     .and_then(|val| val.to_str().ok())
+    //     .and_then(|cookie_str| {
+    //         cookie_str.split(';').map(|c| c.trim()).find_map(|c| {
+    //             if c.starts_with("refresh_token=") {
+    //                 Some(c.trim_start_matches("refresh_token=").to_string())
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //     });
 
-    let refresh_token = cookie_header
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|c| {
-                let parts: Vec<&str> = c.trim().splitn(2, '=').collect();
-                if parts.get(0)? == &"refresh_token" {
-                    parts.get(1).map(|s| s.to_string())
-                } else {
-                    None
-                }
-            })
-        })
-        .ok_or_else(|| warp::reject::custom(AppError::MissingToken))?;
+    // let refresh_token =
 
-    println!("refresh_token: {refresh_token}");
+    println!("[REFRESH] refresh_token: {:?}", refresh_token);
+    // let refresh_token = match refresh_token {
+    //     Some(token) => token,
+    //     None => return Err(warp::reject::custom(AppError::MissingToken)),
+    // };
 
-    // 2. Look up session by refresh token in Redis
-    let (user_id, session_id) =
-        repository::get_session_by_refresh_token(&mut redis_conn, &refresh_token)
+    let user_data: RefreshTokenData =
+        repository::get_refresh_token_data(&mut redis_conn, &refresh_token)
             .await
             .map_err(warp::reject::custom)?;
 
-    // 3. Generate new access token
-    let user = repository::find_user_by_id(&pool, &user_id)
+    let access_token = generate_access_token(user_data.user_id.clone(), user_data.email.clone())
+        .map_err(warp::reject::custom)?;
+
+    let new_refresh_token = generate_refresh_token().map_err(warp::reject::custom)?;
+
+    repository::store_refresh_token(
+        &mut redis_conn,
+        &new_refresh_token,
+        user_data.user_id,
+        user_data.email,
+    )
+    .await
+    .map_err(warp::reject::custom)?;
+
+    repository::delete_refresh_token(&mut redis_conn, &refresh_token)
         .await
         .map_err(warp::reject::custom)?;
 
-    let access_token = generate_access_token(user.id.to_string(), user.email.clone())
-        .map_err(warp::reject::custom)?;
-
-    // 4. Build response
     let response = json!({
         "access_token": access_token,
     });
 
-    Ok(warp::reply::with_status(
-        warp::reply::json(&response),
-        StatusCode::OK,
-    ))
+    let reply = warp::reply::json(&response);
+    let reply_with_cookie = warp::reply::with_header(
+        reply,
+        header::SET_COOKIE,
+        HeaderValue::from_str(&generate_cookie(&new_refresh_token)).unwrap(),
+    );
+
+    Ok(warp::reply::with_status(reply_with_cookie, StatusCode::OK))
 }
+
 pub async fn verify_email(
     token: String,
     pool: PgPool,

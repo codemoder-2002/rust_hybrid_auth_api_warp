@@ -174,7 +174,6 @@ pub async fn delete_email_verification_token(
 
 pub async fn store_refresh_token(
     redis_conn: &mut Connection,
-    session_id: &str,
     refresh_token: &str,
     user_id: String,
     user_email: String,
@@ -182,9 +181,8 @@ pub async fn store_refresh_token(
     // Get a connection from the pool
 
     // Create the key and value for Redis
-    let key = format!("session:{}", session_id);
+    let key = format!("refresh_token:{}", refresh_token);
     let value = serde_json::json!({
-        "refresh_token": refresh_token,
         "user_id": user_id,
         "email": user_email,
     })
@@ -202,11 +200,11 @@ pub async fn store_refresh_token(
     Ok(())
 }
 
-pub async fn get_refresh_token(
+pub async fn get_refresh_token_data(
     redis_conn: &mut Connection,
-    session_id: &str,
+    refresh_token: &str,
 ) -> Result<RefreshTokenData, AppError> {
-    let key = format!("session:{}", session_id);
+    let key = format!("refresh_token:{}", refresh_token);
 
     // Get the raw JSON string
     let value: String = redis_conn
@@ -223,12 +221,12 @@ pub async fn get_refresh_token(
 
 pub async fn delete_refresh_token(
     redis_conn: &mut Connection,
-    session_id: &str,
+    refresh_token: &str,
 ) -> Result<(), AppError> {
     // Get a connection from the pool
 
     // Create the key and value for Redis
-    let key = format!("session:{}", session_id);
+    let key = format!("refresh_token:{}", refresh_token);
 
     // Set the expiration (7 days in seconds)
 

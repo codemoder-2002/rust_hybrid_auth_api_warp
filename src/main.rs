@@ -49,9 +49,11 @@ async fn main() {
         .map(|| warp::reply::json(&serde_json::json!({ "status": "ok" })));
 
     let cors = warp::cors()
-        .allow_origin("http://localhost:3000") // allow your frontend dev server
-        .allow_credentials(true)
-        .allow_headers(vec!["content-type", "authorization"]);
+        .allow_origin("http://localhost:3000") // ⚠️ must match exactly
+        .allow_methods(vec!["GET", "POST", "OPTIONS"])
+        .allow_headers(vec!["content-type"])
+        .allow_any_origin()
+        .allow_credentials(true);
 
     let routes = api::auth::controller::auth_routes(pool, redis_pool, kafka_producer.clone())
         .recover(shared::error::handlers::handle_rejection)

@@ -6,7 +6,6 @@ use crate::api::auth::dto::{LoginRequest, RegisterRequest};
 use crate::shared::error::AppError;
 use crate::shared::error::handlers::handle_rejection;
 use crate::shared::kafka_message::producer::KafkaProducer;
-use crate::shared::utils::jwt::Claims;
 use crate::shared::utils::validator::with_validated_body;
 use deadpool_redis::{Connection, Pool};
 
@@ -69,11 +68,12 @@ pub fn auth_routes(
         .and(with_validated_body::<RegisterRequest>())
         .and_then(service::register);
 
+    //  .and(warp::cookie("access_token"))  using this we can get the access token from browser cookies
+
     let refresh = warp::path!("refresh")
         .and(warp::get())
-        .and(with_db(pool.clone()))
         .and(with_redis(redis_pool.clone()))
-        .and(warp::header::headers_cloned()) // 👈 correct way to get cookies
+        .and(warp::cookie("refresh_token"))
         .and_then(service::refresh_token);
 
     let verify_email = warp::path!("verify-email" / String) // token as path param
