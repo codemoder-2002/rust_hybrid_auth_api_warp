@@ -6,7 +6,9 @@ use crate::api::auth::dto::{LoginRequest, RegisterRequest};
 use crate::shared::error::AppError;
 use crate::shared::error::handlers::handle_rejection;
 use crate::shared::kafka_message::producer::KafkaProducer;
-use crate::shared::utils::validator::with_validated_body;
+use crate::shared::utils::validator::{
+    with_parsed_cookie, with_validated_body, with_validated_header,
+};
 use deadpool_redis::{Connection, Pool};
 
 // use redis::aio::MultiplexedConnection;
@@ -73,7 +75,7 @@ pub fn auth_routes(
     let refresh = warp::path!("refresh")
         .and(warp::get())
         .and(with_redis(redis_pool.clone()))
-        .and(warp::cookie("refresh_token"))
+        .and(with_parsed_cookie()) // using this we can get the refresh token from browser cookies
         .and_then(service::refresh_token);
 
     let verify_email = warp::path!("verify-email" / String) // token as path param

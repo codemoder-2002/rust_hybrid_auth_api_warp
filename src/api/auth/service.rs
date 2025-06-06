@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use deadpool_redis::Connection;
-use warp::http::header::COOKIE;
 
 use serde_json::json;
 pub use sqlx::PgPool;
@@ -9,12 +8,15 @@ pub use sqlx::PgPool;
 use warp::{
     Rejection, Reply,
     http::StatusCode,
-    http::{HeaderValue, header},
+    http::{
+        Response,
+        header::{HeaderValue, SET_COOKIE},
+    },
     reject,
 };
 
 use super::{
-    dto::{OAuthCallbackBody, TwofaRequest},
+    dto::TwofaRequest,
     repository::{self, store_2fa_code},
 };
 use crate::{
@@ -112,19 +114,20 @@ pub async fn login(
     }
 
     // 6. No 2FA, successful login
-    generate_success_response(&mut redis_conn, &user).await
+    return generate_success_response(&mut redis_conn, &user).await;
 }
 
-fn generate_cookie(value: &str) -> String {
-    let secure = if std::env::var("RUST_ENV").unwrap_or_default() == "production" {
+fn generate_cookie(token: &str, value: &str) -> String {
+    let is_prod = std::env::var("RUST_ENV").unwrap_or_default() == "production";
+    let secure = if is_prod {
         "Secure; SameSite=None"
     } else {
         "SameSite=Lax"
     };
 
     format!(
-        "refresh_token={}; HttpOnly; {}; Path=/; Max-Age=604800;",
-        value, secure
+        "mango.{}={}; {}; Path=/; Max-Age=604800; ",
+        token, value, secure
     )
 }
 
@@ -135,6 +138,7 @@ async fn generate_success_response(
     let access_token = generate_access_token(user.id.to_string(), user.email.clone())?;
     let refresh_token: String = generate_refresh_token()?;
     println!("refresh_token: {:?}", refresh_token);
+    println!("access_token: {:?}", access_token);
 
     repository::store_refresh_token(
         redis_conn,
@@ -145,7 +149,7 @@ async fn generate_success_response(
     .await?;
 
     let body = json!({
-        "access_token": access_token,
+        // "access_token": access_token,
         // "session_id": session_id,
             "id": user.id,
             "email": user.email,
@@ -156,14 +160,19 @@ async fn generate_success_response(
         "success": true,
     });
 
-    let reply = warp::reply::json(&body);
-    let cookie_str = generate_cookie(&refresh_token);
-    let cookie_header = HeaderValue::from_str(&cookie_str)
-        .map_err(|_| warp::reject::custom(AppError::InvalidToken))?;
+    // let reply = warp::reply::json(&body);
+    let cookie1 = HeaderValue::from_str(&generate_cookie("refresh_token", &refresh_token)).unwrap();
+    let cookie2 = HeaderValue::from_str(&generate_cookie("access_token", &access_token)).unwrap();
 
-    let reply_with_cookie = warp::reply::with_header(reply, header::SET_COOKIE, cookie_header);
+    let mut res = Response::builder();
+    res = res
+        .header("content-type", "application/json")
+        .header(SET_COOKIE, cookie1)
+        .header(SET_COOKIE, cookie2);
 
-    Ok(Box::new(reply_with_cookie))
+    let response = res.body(serde_json::to_string(&body).unwrap()).unwrap();
+
+    Ok(Box::new(response))
 }
 
 pub async fn register(
@@ -278,39 +287,18 @@ async fn handle_email_verification(
 pub async fn refresh_token(
     mut redis_conn: Connection,
     refresh_token: String,
-) -> Result<impl warp::Reply, Rejection> {
-    println!("headers: {:}", refresh_token);
-    // let refresh_token = headers
-    //     .get(COOKIE)
-    //     .and_then(|val| val.to_str().ok())
-    //     .and_then(|cookie_str| {
-    //         cookie_str.split(';').map(|c| c.trim()).find_map(|c| {
-    //             if c.starts_with("refresh_token=") {
-    //                 Some(c.trim_start_matches("refresh_token=").to_string())
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //     });
-
-    // let refresh_token =
-
-    println!("[REFRESH] refresh_token: {:?}", refresh_token);
-    // let refresh_token = match refresh_token {
-    //     Some(token) => token,
-    //     None => return Err(warp::reject::custom(AppError::MissingToken)),
-    // };
-
-    let user_data: RefreshTokenData =
-        repository::get_refresh_token_data(&mut redis_conn, &refresh_token)
-            .await
-            .map_err(warp::reject::custom)?;
-
-    let access_token = generate_access_token(user_data.user_id.clone(), user_data.email.clone())
+) -> Result<impl Reply, warp::Rejection> {
+    // Retrieve user data associated with the refresh token
+    let user_data = repository::get_refresh_token_data(&mut redis_conn, &refresh_token)
+        .await
         .map_err(warp::reject::custom)?;
 
+    // Generate new tokens
+    let access_token = generate_access_token(user_data.user_id.clone(), user_data.email.clone())
+        .map_err(warp::reject::custom)?;
     let new_refresh_token = generate_refresh_token().map_err(warp::reject::custom)?;
 
+    // Store the new refresh token and delete the old one
     repository::store_refresh_token(
         &mut redis_conn,
         &new_refresh_token,
@@ -324,18 +312,33 @@ pub async fn refresh_token(
         .await
         .map_err(warp::reject::custom)?;
 
-    let response = json!({
-        "access_token": access_token,
+    // Create cookie headers
+    let refresh_cookie =
+        HeaderValue::from_str(&generate_cookie("refresh_token", &new_refresh_token)).unwrap();
+    let access_cookie =
+        HeaderValue::from_str(&generate_cookie("access_token", &access_token)).unwrap();
+
+    // Create the JSON response body
+    let body = json!({
+        "success": true,
+        "message": "Tokens refreshed successfully"
     });
 
-    let reply = warp::reply::json(&response);
-    let reply_with_cookie = warp::reply::with_header(
-        reply,
-        header::SET_COOKIE,
-        HeaderValue::from_str(&generate_cookie(&new_refresh_token)).unwrap(),
-    );
+    // Build the response with multiple Set-Cookie headers
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).unwrap())
+        .unwrap();
 
-    Ok(warp::reply::with_status(reply_with_cookie, StatusCode::OK))
+    // Append multiple Set-Cookie headers
+    {
+        let headers = response.headers_mut();
+        headers.append(SET_COOKIE, refresh_cookie);
+        headers.append(SET_COOKIE, access_cookie);
+    }
+
+    Ok(response)
 }
 
 pub async fn verify_email(

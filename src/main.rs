@@ -49,9 +49,9 @@ async fn main() {
         .map(|| warp::reply::json(&serde_json::json!({ "status": "ok" })));
 
     let cors = warp::cors()
-        .allow_origin("http://localhost:3000") // ⚠️ must match exactly
+        .allow_origin("http://localhost:3001") // ⚠️ must match exactly
         .allow_methods(vec!["GET", "POST", "OPTIONS"])
-        .allow_headers(vec!["content-type"])
+        .allow_headers(vec!["content-type", "authorization", "Cookie"])
         .allow_any_origin()
         .allow_credentials(true);
 
